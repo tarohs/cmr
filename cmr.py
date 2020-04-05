@@ -164,10 +164,11 @@ parser.add_argument('--shrinkrate', type = float,
                     default = [2.],
                     help = 'camera shrink rate')
 parser.add_argument('--picture', '-P',
-                    choices = ['resize', 'r', 'crop', 'c', 'chase', 'C'],
-                    help = 'resize|r: auto resize FILENAME (default), '\
-                           'crop|c: auto crop FILENAME, '\
-                           'chase|C: FILENAME chases a face',
+                    choices = ['resize', 'crop', 'chase'],
+                    help = 'resize: auto resize FILENAME (default), '\
+                           'crop: auto crop FILENAME, '\
+                           'chase: FILENAME chases a face '\
+                           '(default if FILENAME has alpha channel)',
                     default = 'resize')
 parser.add_argument('--center', '-C', nargs = 2, type = float,
                     default = [.5, .5],
@@ -211,16 +212,20 @@ print('camera', imsize[1], 'x', imsize[0])
 #.......................................................................
 # process picture file if given
 
-chase = False
+chase, alpha = False, False
 if args.FILENAME is not None:
     fname = args.FILENAME
-    bg = cv.imread(fname, cv.IMREAD_COLOR)
+    bg = cv.imread(fname, cv.IMREAD_UNCHANGED)
     if bg is None:
          print(sys.argv[0], ': cannot open file ', fname, sep = '')
          sys.exit(1)
-    if args.picture == 'resize' or args.picture == 'r':
+    if bg.shape[2] == 4:
+        alpha = True
+        args.picture = 'chase'
+    print(args.FILENAME, bg.shape, 'alpha:', alpha)
+    if args.picture == 'resize':
         bg = autoresize(bg, imsize)
-    elif args.picture == 'crop' or args.picture == 'c':
+    elif args.picture == 'crop':
         print(bg.shape)
         offx = imsize[1] * .5 - bg.shape[1] * args.resize[0] * args.center[0]
         offy = imsize[0] * .5 - bg.shape[0] * args.resize[0] * args.center[1]
@@ -228,14 +233,19 @@ if args.FILENAME is not None:
         T = np.float32(
                 [[args.resize[0], 0., offx], [0., args.resize[0], offy]])
         bg = cv.warpAffine(bg, T, tuple(imsize[::-1]))
-    elif args.picture == 'chase' or args.picture == 'C':
+    elif args.picture == 'chase':
+        chase = True
         bgorg = cv.resize(bg, dsize = None, 
                     fx = args.resize[0], fy = args.resize[0])
         bg = autocrop(bgorg, imsize)
-        chase = True
     else: # NEVERREACHED
         sys.exit(99)
+    if alpha:
+        bgmaskorg = bgorg[:, :, 3]
+        bgorg = bgorg[:, :, 0:3].astype(np.uint8)
+        bg = bg[:, :, 0:3].astype(np.uint8)
     cv.imshow(fname, bg)
+    print('1:', bg.shape, bgmaskorg.shape)
     cv.waitKey(1000)
 else:
     fname = 'camera'
@@ -247,6 +257,7 @@ else:
 cap = cv.VideoCapture(0)
 mask = np.zeros((imsize[0], imsize[1]), dtype = np.uint8)
 bgmask = 255 - mask
+
 while True:
     ret, camimage = cap.read() # capture 1 frame
     camimage = cv.resize(camimage, dsize = (imsize[1], imsize[0]))
@@ -264,13 +275,18 @@ while True:
             offy = y + h / 2 - bgorg.shape[0] * args.center[1]
             T = np.float32([[1., 0., offx], [0., 1., offy]])
             bg = cv.warpAffine(bgorg, T, tuple(imsize[::-1]))
-        if args.square:
-            mask = sqfacemask(camimage.shape[:2], faces)
-        else:
-            mask = circfacemask(camimage.shape[:2], faces, args.innercircle)
-        bgmask = 255 - mask
-        if args.reverse:
-            mask, bgmask = bgmask, mask
+            if alpha:
+                bgmask = cv.warpAffine(bgmaskorg, T, tuple(imsize[::-1]))
+                mask = 255 - bgmask
+        if not alpha:
+            if args.square:
+                mask = sqfacemask(camimage.shape[:2], faces)
+            else:
+                mask = circfacemask(camimage.shape[:2], faces, args.innercircle)
+            bgmask = 255 - mask
+            if args.reverse:
+                mask, bgmask = bgmask, mask
+
     if 0 < args.mosaic:
         bg = mosaic(camimage, args.mosaic)
     elif 0 < args.blur or args.negative:
